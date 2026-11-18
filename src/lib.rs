@@ -1,4 +1,5 @@
 //! Kingst LA1010 capture and protocol decoding.
+pub mod capture;
 pub mod decode;
 pub mod device;
 pub mod error;
@@ -10,4 +11,5 @@ pub mod stream;
 #[doc(hidden)]
 pub mod testgen;
 pub mod units;
+pub mod usb;
 pub mod window;
