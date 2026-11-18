@@ -26,6 +26,14 @@ After a replug the device enumerates as `77a1:01a2` without product string (no f
 enumerates as "Kingst Logic Analyzer". A second `info` skips both uploads (14 ms).
 `measure -c 0 -d 100ms` afterwards streams normally (CH0 static high, generator off).
 
+## Channel mapping and live UART (P0 on CH7)
+
+- `measure -c 0-15 -r 1M -d 1s`: CH7 1000.013 Hz, duty 50.0%, 2000 edges, pulse 0.499–0.500 ms;
+  all other 15 channels static low (no crosstalk, no mis-mapping of the CH7 bit).
+- `monitor --decode uart:rx=7,baud=2000 --count 3`: three `0x55 'U'`, exit 0 after 71 ms.
+- `monitor --decode uart:rx=7 --count 3`: `baud 2000 (auto, non-standard)`, three `0x55 'U'`,
+  exit 0 after 174 ms (live auto-baud and byte emission without a following edge).
+
 ## Lossless streaming (rate × channels)
 
 `la1010 measure -c 0-(n-1) -r R -d 2s`; OK = CH0 min and max pulse within 1.5 samples of 500 µs.
@@ -56,5 +64,5 @@ stops sending; the tool reports `stream stalled` and exits 2, never output with 
 
 ## Not tested
 
-- Channel mapping CH1–CH15 (needs rewiring P0).
+- Channel mapping of CH1–CH6 and CH8–CH15 individually (only CH0 and CH7 driven).
 - Threshold accuracy; UART/I²C/SPI against real buses; USB full speed on a real bus.
