@@ -19,6 +19,13 @@ negotiates CBC / RSA-key-exchange TLS 1.2 suites, so the download uses the OS TL
   CH1 static low. The 13 ppm offset is the scope/analyzer clock difference.
 - `cargo test --test hw -- --ignored`: 2/2 pass.
 
+## Cold start
+
+After a replug the device enumerates as `77a1:01a2` without product string (no firmware).
+`la1010 --json info`: `fx2_uploaded:true`, `fpga_uploaded:true`, exit 0 in 4.05 s; it then
+enumerates as "Kingst Logic Analyzer". A second `info` skips both uploads (14 ms).
+`measure -c 0 -d 100ms` afterwards streams normally (CH0 static high, generator off).
+
 ## Lossless streaming (rate × channels)
 
 `la1010 measure -c 0-(n-1) -r R -d 2s`; OK = CH0 min and max pulse within 1.5 samples of 500 µs.
@@ -49,6 +56,5 @@ stops sending; the tool reports `stream stalled` and exits 2, never output with 
 
 ## Not tested
 
-- Cold start (FX2 RAM upload and FPGA load by this tool): needs the analyzer to be replugged.
 - Channel mapping CH1–CH15 (needs rewiring P0).
 - Threshold accuracy; UART/I²C/SPI against real buses; USB full speed on a real bus.
