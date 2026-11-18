@@ -1,0 +1,22 @@
+[package]
+name = "la1010"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Command-line capture and protocol decoding for the Kingst LA1010 logic analyzer"
+rust-version = "1.85"
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+ctrlc = "3.5"
+flate2 = "1.1"
+nusb = "0.2.9"
+object = "0.41"
+serde_json = { version = "1", features = ["preserve_order"] }
+tar = "0.4"
+ureq = "3.5"
+zip = { version = "9.7", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+object = { version = "0.41", features = ["write"] }
+tempfile = "3"
