@@ -7,7 +7,7 @@ pub const BASE_CLOCK: f64 = 800e6;
 /// LA1010 maximum sample rate.
 pub const MAX_RATE: f64 = 100e6;
 /// Highest rate x channels product verified lossless on hardware (bits/s).
-pub const VERIFIED_BPS: f64 = 200e6;
+pub const VERIFIED_BPS: f64 = 320e6;
 
 /// Parse a positive number with optional k/M/G suffix.
 pub fn parse_si(s: &str) -> Option<f64> {

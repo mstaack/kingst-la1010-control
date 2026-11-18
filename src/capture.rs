@@ -71,7 +71,7 @@ pub fn stream(
         let Some(c) = ep.wait_next_complete(Duration::from_millis(100)) else {
             if last.elapsed() > stall {
                 break Err(Error::Device(format!(
-                    "stream stalled: no data for {:.1} s",
+                    "stream stalled: no data for {:.1} s (the device stops when rate x channels exceeds about 320 Mbit/s; lower them)",
                     last.elapsed().as_secs_f64()
                 )));
             }

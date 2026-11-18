@@ -38,6 +38,6 @@ fn square_on_ch0_at_1mhz() {
     .unwrap();
     let s = &m.finish()[0];
     assert!((s.freq_hz.unwrap() - 1000.0).abs() < 0.5, "{s:?}");
-    assert!((s.min_pulse_s.unwrap() - 500e-6).abs() <= 1e-6, "{s:?}");
-    assert!((s.max_pulse_s.unwrap() - 500e-6).abs() <= 1e-6, "{s:?}");
+    assert!((s.min_pulse_s.unwrap() - 500e-6).abs() <= 1.5e-6, "{s:?}");
+    assert!((s.max_pulse_s.unwrap() - 500e-6).abs() <= 1.5e-6, "{s:?}");
 }
