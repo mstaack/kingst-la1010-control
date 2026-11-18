@@ -1,6 +1,7 @@
 //! Protocol decoders. Each consumes sorted edges (see `stream::Edge`) and emits events.
 
 pub mod i2c;
+pub mod spi;
 pub mod uart;
 
 use std::str::FromStr;
@@ -31,7 +32,7 @@ pub struct Info {
 }
 
 pub fn catalog() -> Vec<&'static Info> {
-    vec![&uart::INFO, &i2c::INFO]
+    vec![&uart::INFO, &i2c::INFO, &spi::INFO]
 }
 
 pub fn info(name: &str) -> Result<&'static Info> {
@@ -152,6 +153,7 @@ pub fn build(spec: &Spec, rate: f64) -> Result<Box<dyn Decoder>> {
     Ok(match spec.name.as_str() {
         "uart" => Box::new(uart::Uart::new(spec, rate)?),
         "i2c" => Box::new(i2c::I2c::new(spec)?),
+        "spi" => Box::new(spi::Spi::new(spec)?),
         n => return Err(Error::Usage(format!("unknown decoder '{n}'"))),
     })
 }
@@ -164,6 +166,7 @@ pub fn recommended_rate(spec: &Spec) -> Result<f64> {
             Some(b) => 16.0 * parse_si(b).ok_or_else(|| spec.usage(format!("invalid baud={b}")))?,
         },
         "i2c" => 10e6,
+        "spi" => 25e6,
         n => return Err(Error::Usage(format!("unknown decoder '{n}'"))),
     };
     Ok(r.clamp(1e6, MAX_RATE))

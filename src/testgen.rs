@@ -102,3 +102,40 @@ pub fn i2c_stop(w: &mut Wave, scl: u8, sda: u8, t: u64, h: u64) -> u64 {
     w.set(t + 2 * h, sda, true);
     t + 2 * h
 }
+
+/// One SPI word. CPHA=0: data set, then leading edge (sample), then trailing edge.
+/// CPHA=1: leading edge, data set, then trailing edge (sample). Returns end time.
+#[allow(clippy::too_many_arguments)]
+pub fn spi_word(
+    w: &mut Wave,
+    clk: u8,
+    mosi: u8,
+    miso: u8,
+    mut t: u64,
+    h: u64,
+    mode: u8,
+    bits: u8,
+    lsb: bool,
+    vm: u32,
+    vs: u32,
+) -> u64 {
+    let cpol = mode >> 1 & 1 == 1;
+    let cpha = mode & 1 == 1;
+    for i in 0..bits {
+        let k = if lsb { i } else { bits - 1 - i };
+        let (bm, bs) = (vm >> k & 1 == 1, vs >> k & 1 == 1);
+        if cpha {
+            w.set(t, clk, !cpol);
+            w.set(t + 1, mosi, bm);
+            w.set(t + 1, miso, bs);
+            w.set(t + h, clk, cpol);
+        } else {
+            w.set(t, mosi, bm);
+            w.set(t, miso, bs);
+            w.set(t + h, clk, !cpol);
+            w.set(t + 2 * h, clk, cpol);
+        }
+        t += 2 * h;
+    }
+    t
+}
