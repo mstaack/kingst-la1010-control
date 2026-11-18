@@ -64,3 +64,41 @@ pub fn uart_frame(w: &mut Wave, ch: u8, start: f64, bit: f64, bits: &[bool]) -> 
     }
     start + bits.len() as f64 * bit
 }
+
+/// I2C START: SDA falls while SCL is high, then SCL goes low. `h` = half clock period.
+pub fn i2c_start(w: &mut Wave, scl: u8, sda: u8, t: u64, h: u64) -> u64 {
+    w.set(t, sda, false);
+    w.set(t + h, scl, false);
+    t + h
+}
+
+/// 8 data bits MSB first plus the ACK bit (ack = SDA low on the 9th clock).
+pub fn i2c_byte(w: &mut Wave, scl: u8, sda: u8, mut t: u64, h: u64, byte: u8, ack: bool) -> u64 {
+    for i in 0..9 {
+        let bit = if i < 8 {
+            byte >> (7 - i) & 1 == 1
+        } else {
+            !ack
+        };
+        w.set(t + h / 2, sda, bit);
+        w.set(t + h, scl, true);
+        w.set(t + 2 * h, scl, false);
+        t += 2 * h;
+    }
+    t
+}
+
+pub fn i2c_restart(w: &mut Wave, scl: u8, sda: u8, t: u64, h: u64) -> u64 {
+    w.set(t + h / 2, sda, true);
+    w.set(t + h, scl, true);
+    w.set(t + 2 * h, sda, false);
+    w.set(t + 3 * h, scl, false);
+    t + 3 * h
+}
+
+pub fn i2c_stop(w: &mut Wave, scl: u8, sda: u8, t: u64, h: u64) -> u64 {
+    w.set(t + h / 2, sda, false);
+    w.set(t + h, scl, true);
+    w.set(t + 2 * h, sda, true);
+    t + 2 * h
+}
