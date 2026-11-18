@@ -7,6 +7,7 @@ pub mod export;
 pub mod firmware;
 pub mod measure;
 pub mod output;
+pub mod pipeline;
 pub mod stream;
 #[doc(hidden)]
 pub mod testgen;
