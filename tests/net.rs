@@ -5,7 +5,12 @@
 #[test]
 #[ignore = "downloads ~29 MB from qdkingst.com"]
 fn fetch_from_vendor() {
-    let blobs = la1010::firmware::fetch(la1010::firmware::VENDOR_URL).unwrap();
+    let blobs = la1010::firmware::fetch(
+        la1010::firmware::VENDOR_URL,
+        la1010::firmware::IDLE_TIMEOUT,
+        |_, _| {},
+    )
+    .unwrap();
     for b in &blobs {
         let (_, size, crc) = la1010::firmware::KNOWN
             .iter()

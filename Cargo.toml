@@ -1,6 +1,6 @@
 [package]
 name = "la1010"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "CLI and library for the Kingst LA1010 USB logic analyzer: capture, measure, decode UART/I2C/SPI/USB"
 license = "MIT"

@@ -56,6 +56,10 @@ Files go to the first of `--firmware-dir`, `$LA1010_FIRMWARE_DIR`, `$XDG_DATA_HO
 `~/.local/share/la1010`, and are looked up in the same order. Each file is checked against the
 sizes and CRC32 values of KingstVIS v3.6.6; other versions install with a warning.
 
+The Kingst server can be slow (tens of KB/s), so `fetch` may take several minutes. On a terminal it
+shows progress on stderr; it gives up if the connection stalls for 60 s. If it keeps failing,
+download the tarball with a browser and use `firmware extract`.
+
 ## Usage
 
 ```

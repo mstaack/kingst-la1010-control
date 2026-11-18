@@ -13,6 +13,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use object::{Object, ObjectSection, ObjectSymbol};
 
@@ -20,6 +21,9 @@ use crate::error::{Error, Result};
 
 pub const FX2: &str = "kingst-la-01a2.fw";
 pub const VENDOR_URL: &str = "https://www.qdkingst.com/download/vis_linux";
+/// Abort a download when the connection or a single read stalls this long.
+/// No total limit: the vendor server can be as slow as ~25 KB/s.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// (file, size, crc32) from KingstVIS v3.6.6.
 pub const KNOWN: &[(&str, usize, u32)] = &[
@@ -123,22 +127,55 @@ pub fn extract_from_path(p: &Path) -> Result<Vec<Blob>> {
     }
 }
 
+struct Progress<R, F> {
+    inner: R,
+    done: u64,
+    total: Option<u64>,
+    report: F,
+}
+
+impl<R: Read, F: FnMut(u64, Option<u64>)> Read for Progress<R, F> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            self.done += n as u64;
+            (self.report)(self.done, self.total);
+        }
+        Ok(n)
+    }
+}
+
 /// Download KingstVIS for Linux from `url` and extract the LA1010 files in memory.
-pub fn fetch(url: &str) -> Result<Vec<Blob>> {
+///
+/// Fails if connecting or any single read takes longer than `idle`. `progress` is
+/// called with (bytes received, Content-Length) after each read; reading stops as
+/// soon as the KingstVIS binary has been extracted, usually before the end.
+pub fn fetch(
+    url: &str,
+    idle: Duration,
+    progress: impl FnMut(u64, Option<u64>),
+) -> Result<Vec<Blob>> {
     // The vendor server only offers TLS 1.2 suites that rustls rejects; use the OS TLS stack.
     let tls = ureq::tls::TlsConfig::builder()
         .provider(ureq::tls::TlsProvider::NativeTls)
         .build();
-    let agent = ureq::Agent::new_with_config(ureq::Agent::config_builder().tls_config(tls).build());
-    let resp = agent
+    let config = ureq::Agent::config_builder()
+        .tls_config(tls)
+        .timeout_connect(Some(idle))
+        .timeout_per_read(Some(idle))
+        .build();
+    let resp = ureq::Agent::new_with_config(config)
         .get(url)
         .call()
         .map_err(|e| fw_err(format!("download {url}: {e}")))?;
-    let reader = resp
-        .into_body()
-        .into_with_config()
-        .limit(200 << 20)
-        .reader();
+    let body = resp.into_body();
+    let total = body.content_length();
+    let reader = Progress {
+        inner: body.into_with_config().limit(200 << 20).reader(),
+        done: 0,
+        total,
+        report: progress,
+    };
     from_targz(reader).map_err(|e| match e {
         Error::Io(io) => fw_err(format!("download {url}: {io}")),
         other => other,
@@ -301,14 +338,72 @@ mod tests {
             .unwrap();
             s.write_all(&body).unwrap();
         });
-        let blobs = fetch(&format!("http://127.0.0.1:{port}/download/vis_linux")).unwrap();
+        let blobs = fetch(
+            &format!("http://127.0.0.1:{port}/download/vis_linux"),
+            IDLE_TIMEOUT,
+            |_, _| {},
+        )
+        .unwrap();
         server.join().unwrap();
         assert_eq!(names(&blobs), vec![FX2, "kingst-la1010a2-fpga.bitstream"]);
     }
 
     #[test]
+    fn fetch_reports_progress() {
+        use std::io::{Read as _, Write as _};
+        let body = targz("KingstVIS/KingstVIS", &kingstvis());
+        let len = body.len() as u64;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let _ = s.read(&mut [0u8; 4096]);
+            write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {len}\r\n\r\n").unwrap();
+            s.write_all(&body).unwrap();
+        });
+        let mut seen = Vec::new();
+        fetch(
+            &format!("http://127.0.0.1:{port}/"),
+            Duration::from_secs(5),
+            |n, total| seen.push((n, total)),
+        )
+        .unwrap();
+        server.join().unwrap();
+        assert!(!seen.is_empty());
+        assert!(seen.windows(2).all(|w| w[0].0 < w[1].0));
+        assert!(seen.iter().all(|&(n, t)| t == Some(len) && n <= len));
+    }
+
+    #[test]
+    fn fetch_times_out_on_stalled_body() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let _ = s.read(&mut [0u8; 4096]);
+            write!(s, "HTTP/1.1 200 OK\r\nContent-Length: 1000000\r\n\r\n").unwrap();
+            s.write_all(&[0x1f, 0x8b]).unwrap();
+            let _ = done_rx.recv(); // hold the connection open, send nothing more
+        });
+        let t = std::time::Instant::now();
+        let err = fetch(
+            &format!("http://127.0.0.1:{port}/"),
+            Duration::from_millis(300),
+            |_, _| {},
+        )
+        .unwrap_err();
+        drop(done_tx);
+        server.join().unwrap();
+        assert!(t.elapsed() < Duration::from_secs(5));
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.to_string().contains("timeout"), "{err}");
+    }
+
+    #[test]
     fn fetch_reports_http_errors() {
-        let err = fetch("http://127.0.0.1:9/nothing").unwrap_err();
+        let err = fetch("http://127.0.0.1:9/nothing", IDLE_TIMEOUT, |_, _| {}).unwrap_err();
         assert_eq!(err.exit_code(), 2);
         assert!(err.to_string().contains("download"));
     }

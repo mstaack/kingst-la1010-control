@@ -1,6 +1,6 @@
 //! Subcommand implementations.
 
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -26,7 +26,7 @@ pub fn run(cli: Cli) -> Result<i32> {
         Cmd::Info => info(fw, json),
         Cmd::Firmware {
             cmd: FwCmd::Fetch { out, url },
-        } => install(&firmware::fetch(&url)?, out.as_deref(), fw, json),
+        } => install(&fetch(&url, json)?, out.as_deref(), fw, json),
         Cmd::Firmware {
             cmd: FwCmd::Extract { path, out },
         } => install(
@@ -201,6 +201,25 @@ fn info(fw: Option<&Path>, json: bool) -> Result<i32> {
         writeln!(out, "pins          0x{pins:04x}")?;
     }
     Ok(0)
+}
+
+/// `firmware::fetch` with a one-line progress display on stderr when it is a terminal.
+fn fetch(url: &str, json: bool) -> Result<Vec<firmware::Blob>> {
+    let show = !json && io::stderr().is_terminal();
+    let mut last = u64::MAX;
+    let res = firmware::fetch(url, firmware::IDLE_TIMEOUT, |n, total| {
+        let tenth = n / 100_000;
+        if !show || tenth == last {
+            return;
+        }
+        last = tenth;
+        let total = total.map_or(String::new(), |t| format!("/{:.1}", t as f64 / 1e6));
+        eprint!("\rla1010: downloading {:.1}{total} MB", n as f64 / 1e6);
+    });
+    if show && last != u64::MAX {
+        eprint!("\r\x1b[2K");
+    }
+    res
 }
 
 fn install(
