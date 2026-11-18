@@ -125,7 +125,13 @@ pub fn extract_from_path(p: &Path) -> Result<Vec<Blob>> {
 
 /// Download KingstVIS for Linux from `url` and extract the LA1010 files in memory.
 pub fn fetch(url: &str) -> Result<Vec<Blob>> {
-    let resp = ureq::get(url)
+    // The vendor server only offers TLS 1.2 suites that rustls rejects; use the OS TLS stack.
+    let tls = ureq::tls::TlsConfig::builder()
+        .provider(ureq::tls::TlsProvider::NativeTls)
+        .build();
+    let agent = ureq::Agent::new_with_config(ureq::Agent::config_builder().tls_config(tls).build());
+    let resp = agent
+        .get(url)
         .call()
         .map_err(|e| fw_err(format!("download {url}: {e}")))?;
     let reader = resp

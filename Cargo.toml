@@ -14,7 +14,8 @@ nusb = "0.2.9"
 object = "0.41"
 serde_json = { version = "1", features = ["preserve_order"] }
 tar = "0.4"
-ureq = "3.5"
+# native-tls: the vendor server (IIS 7.5) offers no TLS suite that rustls supports.
+ureq = { version = "3.5", default-features = false, features = ["native-tls"] }
 zip = { version = "9.7", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
