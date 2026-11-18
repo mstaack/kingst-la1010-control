@@ -1,5 +1,6 @@
 //! Kingst LA1010 capture and protocol decoding.
 pub mod decode;
+pub mod device;
 pub mod error;
 pub mod export;
 pub mod firmware;
