@@ -2,6 +2,7 @@
 pub mod decode;
 pub mod error;
 pub mod export;
+pub mod firmware;
 pub mod measure;
 pub mod output;
 pub mod stream;
