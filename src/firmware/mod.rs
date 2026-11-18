@@ -123,6 +123,22 @@ pub fn extract_from_path(p: &Path) -> Result<Vec<Blob>> {
     }
 }
 
+/// Download KingstVIS for Linux from `url` and extract the LA1010 files in memory.
+pub fn fetch(url: &str) -> Result<Vec<Blob>> {
+    let resp = ureq::get(url)
+        .call()
+        .map_err(|e| fw_err(format!("download {url}: {e}")))?;
+    let reader = resp
+        .into_body()
+        .into_with_config()
+        .limit(200 << 20)
+        .reader();
+    from_targz(reader).map_err(|e| match e {
+        Error::Io(io) => fw_err(format!("download {url}: {io}")),
+        other => other,
+    })
+}
+
 pub fn crc32(d: &[u8]) -> u32 {
     let mut c = flate2::Crc::new();
     c.update(d);
@@ -259,6 +275,36 @@ mod tests {
         let err = load("no-such-file.bin", Some(dir.path())).unwrap_err();
         assert_eq!(err.exit_code(), 2);
         assert!(err.to_string().contains("la1010 firmware fetch"));
+    }
+
+    #[test]
+    fn fetch_from_local_server() {
+        use std::io::{Read as _, Write as _};
+        let body = targz("KingstVIS/KingstVIS", &kingstvis());
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = s.read(&mut buf);
+            write!(
+                s,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            s.write_all(&body).unwrap();
+        });
+        let blobs = fetch(&format!("http://127.0.0.1:{port}/download/vis_linux")).unwrap();
+        server.join().unwrap();
+        assert_eq!(names(&blobs), vec![FX2, "kingst-la1010a2-fpga.bitstream"]);
+    }
+
+    #[test]
+    fn fetch_reports_http_errors() {
+        let err = fetch("http://127.0.0.1:9/nothing").unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.to_string().contains("download"));
     }
 
     #[test]
