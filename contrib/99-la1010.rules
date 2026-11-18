@@ -1,0 +1,2 @@
+# Kingst LA1010 (FX2, before and after firmware upload)
+SUBSYSTEM=="usb", ATTR{idVendor}=="77a1", ATTR{idProduct}=="01a2", MODE="0660", TAG+="uaccess"
