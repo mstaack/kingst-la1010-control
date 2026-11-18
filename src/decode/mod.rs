@@ -14,6 +14,8 @@ use crate::units::{MAX_RATE, parse_si};
 
 pub trait Decoder {
     fn feed(&mut self, edges: &[Edge], out: &mut Vec<Event>);
+    /// No edge before sample `now` is still to come: emit what that completes.
+    fn advance(&mut self, _now: u64, _out: &mut Vec<Event>) {}
     /// `end`: last sample of the capture (exclusive).
     fn finish(&mut self, end: u64, out: &mut Vec<Event>);
 }

@@ -85,6 +85,12 @@ impl<W: Write> Pipeline<W> {
                 w.edges(&self.edges)?;
             }
         }
+        if self.window.triggered() {
+            let now = self.window.output_len(now);
+            for d in &mut self.decoders {
+                d.advance(now, &mut self.events);
+            }
+        }
         self.emit()?;
         Ok(!done && !self.hit)
     }

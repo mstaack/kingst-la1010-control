@@ -207,6 +207,8 @@ pub struct Usb {
     lines: Lines,
     sym: Option<Sym>,
     since: u64,
+    /// Speed detection: line state (dp, dm) and when it began.
+    cand: Option<((bool, bool), u64)>,
     raw: Option<Raw>,
     suspended: bool,
     show_sof: bool,
@@ -244,6 +246,7 @@ impl Usb {
             lines: Lines::default(),
             sym: None,
             since: 0,
+            cand: None,
             raw: None,
             suspended: false,
             show_sof: spec.flag("show_sof"),
@@ -287,24 +290,36 @@ impl Usb {
 
     fn step(&mut self, sample: u64, dp: bool, dm: bool, out: &mut Vec<Event>) {
         if self.ls.is_none() {
-            let ls = match (dp, dm) {
+            // Idle J is the only J/K state that lasts 5 us: bit stuffing caps runs in a
+            // packet at 7 bits (4.7 us at low speed).
+            let Some((state, start)) = self.cand.filter(|c| c.0 != (dp, dm)) else {
+                self.cand.get_or_insert(((dp, dm), sample));
+                return;
+            };
+            self.cand = Some(((dp, dm), sample));
+            let ls = match state {
                 (true, false) => false,
                 (false, true) => true,
                 _ => return,
             };
+            if ((sample - start) as f64) < 5e-6 * self.rate {
+                return;
+            }
             self.set_speed(ls);
             let name = if ls { "low" } else { "full" };
             out.push(
-                Event::new(sample, "usb", "info", format!("{name} speed (auto)"))
+                Event::new(start, "usb", "info", format!("{name} speed (auto)"))
                     .with("speed", name),
             );
             if !ls && self.rate < 48e6 {
                 out.push(err(
-                    sample,
+                    start,
                     "rate",
                     "sample rate too low for full speed (need >= 48 MHz)",
                 ));
             }
+            self.sym = Some(Sym::J);
+            self.since = start;
         }
         let new = self.sym(dp, dm);
         match self.sym {
@@ -813,6 +828,37 @@ mod tests {
         }
         d.finish(b.t as u64 + 1000, &mut out);
         assert_eq!(out, whole);
+    }
+
+    #[test]
+    fn speed_detected_from_idle_not_mid_packet() {
+        // The capture starts inside a full-speed packet: the first state seen is K.
+        let mut w = Wave::new();
+        let end = usb_packet(
+            &mut w,
+            0,
+            1,
+            0.0,
+            FS,
+            false,
+            0,
+            &usb_data(DATA0, &[0x12, 0x34]),
+        );
+        let mut b = Bus {
+            w,
+            t: end + 1000.0,
+            bit: FS,
+            ls: false,
+            skew: 0,
+        };
+        b.send(&usb_token(SETUP, 0, 0))
+            .send(&usb_data(DATA0, &[0x80, 6, 0, 1, 0, 0, 0x12, 0]))
+            .send(&usb_handshake(ACK));
+        let ev = b.decode("usb:dp=0,dm=1", RATE);
+        assert_eq!(kinds(&ev, "info")[0].fields["speed"], "full", "{ev:?}");
+        let tx = kinds(&ev, "transaction");
+        assert_eq!(tx.len(), 1, "{ev:?}");
+        assert_eq!(tx[0].fields["request"], "GET_DESCRIPTOR Device len=18");
     }
 
     #[test]

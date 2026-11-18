@@ -24,6 +24,8 @@ fn opts() -> SimpleFileOptions {
 pub struct SrWriter {
     zip: ZipWriter<File>,
     levels: u16,
+    /// Bytes per sample: 1 when all channels fit in D0-D7.
+    unit: usize,
     pos: u64,
     chunk: Vec<u8>,
     n: u32,
@@ -41,12 +43,14 @@ impl SrWriter {
         for ch in (0..16).filter(|c| mask >> c & 1 == 1) {
             meta.push_str(&format!("probe{}=D{ch}\n", ch + 1));
         }
-        meta.push_str("unitsize=2\n");
+        let unit = if mask < 0x100 { 1 } else { 2 };
+        meta.push_str(&format!("unitsize={unit}\n"));
         zip.start_file("metadata", opts()).map_err(zerr)?;
         zip.write_all(meta.as_bytes())?;
         Ok(SrWriter {
             zip,
             levels: 0,
+            unit,
             pos: 0,
             chunk: Vec::with_capacity(CHUNK),
             n: 0,
@@ -55,11 +59,12 @@ impl SrWriter {
 
     fn fill(&mut self, until: u64) -> Result<()> {
         let bytes = self.levels.to_le_bytes();
+        let bytes = &bytes[..self.unit];
         while self.pos < until {
-            let room = (CHUNK - self.chunk.len()) / 2;
+            let room = (CHUNK - self.chunk.len()) / self.unit;
             let k = room.min((until - self.pos) as usize);
             for _ in 0..k {
-                self.chunk.extend_from_slice(&bytes);
+                self.chunk.extend_from_slice(bytes);
             }
             self.pos += k as u64;
             if self.chunk.len() == CHUNK {
@@ -223,6 +228,30 @@ mod tests {
         let rec = round_trip(&edges, 0b10, 3_000_000);
         assert_eq!(rec.edges, edges.to_vec());
         assert_eq!(rec.end, 3_000_000);
+    }
+
+    #[test]
+    fn eight_channels_use_one_byte_units() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.sr");
+        let mut w: Box<dyn Writer> =
+            Box::new(SrWriter::new(File::create(&path).unwrap(), 0b101, 10e6).unwrap());
+        w.edges(&[e(0, 0, false), e(0, 2, true), e(5, 0, true)])
+            .unwrap();
+        w.finish(12).unwrap();
+        let mut zip = ZipArchive::new(File::open(&path).unwrap()).unwrap();
+        let mut meta = String::new();
+        zip.by_name("metadata")
+            .unwrap()
+            .read_to_string(&mut meta)
+            .unwrap();
+        assert!(meta.contains("unitsize=1"), "{meta}");
+        assert_eq!(zip.by_name("logic-1-1").unwrap().size(), 12);
+        let rec = read(File::open(&path).unwrap()).unwrap();
+        assert_eq!(
+            rec.edges,
+            vec![e(0, 0, false), e(0, 2, true), e(5, 0, true)]
+        );
     }
 
     #[test]

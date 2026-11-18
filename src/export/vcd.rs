@@ -21,6 +21,7 @@ impl<W: Write> VcdWriter<W> {
     pub fn new(mut out: W, mask: u16, rate: f64) -> Result<Self> {
         writeln!(out, "$version la1010 {} $end", env!("CARGO_PKG_VERSION"))?;
         writeln!(out, "$timescale 1 ps $end")?;
+        writeln!(out, "$comment samplerate {rate} $end")?;
         writeln!(out, "$scope module la1010 $end")?;
         for ch in (0..16u8).filter(|c| mask >> c & 1 == 1) {
             writeln!(out, "$var wire 1 {} D{ch} $end", id(ch))?;
@@ -61,7 +62,9 @@ fn units_per_second(s: &str) -> Result<f64> {
     let split = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
     let n: f64 = s[..split]
         .parse()
-        .map_err(|_| invalid(format!("VCD: bad timescale '{s}'")))?;
+        .ok()
+        .filter(|n| *n > 0.0)
+        .ok_or_else(|| invalid(format!("VCD: bad timescale '{s}'")))?;
     let unit = match s[split..].trim() {
         "s" => 1.0,
         "ms" => 1e3,
@@ -83,6 +86,8 @@ pub fn read(mut r: impl Read) -> Result<Recording> {
     r.read_to_string(&mut text)?;
     let mut tok = text.split_whitespace();
     let mut ups: Option<f64> = None;
+    // Written by la1010; without it the rate is inferred from the timestamps.
+    let mut hint: Option<f64> = None;
     let mut ids: HashMap<String, u8> = HashMap::new();
     let mut used = 0u16;
     let mut t: u64 = 0;
@@ -92,6 +97,12 @@ pub fn read(mut r: impl Read) -> Result<Recording> {
             "$timescale" => {
                 let s: String = tok.by_ref().take_while(|x| *x != "$end").collect();
                 ups = Some(units_per_second(&s)?);
+            }
+            "$comment" => {
+                let v: Vec<&str> = tok.by_ref().take_while(|x| *x != "$end").collect();
+                if let ["samplerate", r] = v[..] {
+                    hint = r.parse().ok().filter(|r: &f64| r.is_finite() && *r > 0.0);
+                }
             }
             "$var" => {
                 let v: Vec<&str> = tok.by_ref().take_while(|x| *x != "$end").collect();
@@ -133,12 +144,16 @@ pub fn read(mut r: impl Read) -> Result<Recording> {
     }
     let ups = ups.ok_or_else(|| invalid("VCD: missing $timescale"))?;
     let end_t = changes.iter().map(|c| c.0).max().unwrap_or(0).max(t);
-    let g = changes
-        .iter()
-        .map(|c| c.0)
-        .chain([end_t])
-        .fold(0, gcd)
-        .max(1);
+    // Time units per sample.
+    let g = match hint {
+        Some(rate) if ups >= rate => (ups / rate).round() as u64,
+        _ => changes
+            .iter()
+            .map(|c| c.0)
+            .chain([end_t])
+            .fold(0, gcd)
+            .max(1),
+    };
     changes.sort_by_key(|c| (c.0, c.1));
     let mut last: [Option<bool>; 16] = [None; 16];
     let mut edges = Vec::new();
@@ -153,7 +168,7 @@ pub fn read(mut r: impl Read) -> Result<Recording> {
         }
     }
     Ok(Recording {
-        rate: ups / g as f64,
+        rate: hint.filter(|r| ups >= *r).unwrap_or(ups / g as f64),
         mask: used,
         edges,
         end: end_t / g,
@@ -217,6 +232,24 @@ mod tests {
                 e(2, 1, false)
             ]
         );
+    }
+
+    #[test]
+    fn static_line_keeps_sample_rate() {
+        let mut buf = Vec::new();
+        {
+            let mut w: Box<dyn Writer + '_> = Box::new(VcdWriter::new(&mut buf, 1, 100e6).unwrap());
+            w.edges(&[e(0, 0, true)]).unwrap();
+            w.finish(1_000_000).unwrap();
+        }
+        let rec = read(&buf[..]).unwrap();
+        assert_eq!(rec.rate, 100e6);
+        assert_eq!(rec.end, 1_000_000);
+    }
+
+    #[test]
+    fn zero_timescale_is_error() {
+        assert!(read("$timescale 0 ps $end\n$var wire 1 A D0 $end\n#0\n1A\n".as_bytes()).is_err());
     }
 
     #[test]

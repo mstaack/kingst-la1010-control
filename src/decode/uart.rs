@@ -44,7 +44,12 @@ const STANDARD: [f64; 22] = [
     300.0, 600.0, 1200.0, 2400.0, 4800.0, 9600.0, 14400.0, 19200.0, 28800.0, 38400.0, 57600.0,
     76800.0, 115200.0, 230400.0, 250000.0, 460800.0, 500000.0, 921600.0, 1e6, 1.5e6, 2e6, 3e6,
 ];
+/// Auto-baud collects transitions until one of these: this many,
 const AUTO_EDGES: usize = 256;
+/// an idle gap this long (s),
+const AUTO_GAP: f64 = 0.02;
+/// or this long since the first transition (s).
+const AUTO_SPAN: f64 = 0.2;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Parity {
@@ -178,12 +183,67 @@ impl Line {
     }
 }
 
+/// Edges of the UART lines buffered while the baud rate is unknown.
+#[derive(Default)]
+struct Auto {
+    buf: Vec<Edge>,
+    seen: u16,
+    transitions: usize,
+    first: Option<u64>,
+    last: Option<u64>,
+}
+
+impl Auto {
+    fn push(&mut self, e: Edge) {
+        let bit = 1u16 << e.ch;
+        if self.seen & bit != 0 {
+            self.transitions += 1;
+            self.first.get_or_insert(e.sample);
+            self.last = Some(e.sample);
+        }
+        self.seen |= bit;
+        self.buf.push(e);
+    }
+
+    fn expired(&self, t: u64, gap: u64, span: u64) -> bool {
+        self.last.is_some_and(|l| t >= l + gap) || self.first.is_some_and(|f| t >= f + span)
+    }
+
+    /// Samples per bit: mean of the narrowest cluster of at least `need` pulse widths.
+    fn estimate(&self, need: usize) -> Option<f64> {
+        let mut prev: [Option<u64>; 16] = [None; 16];
+        let mut seen = 0u16;
+        let mut widths = Vec::new();
+        for e in &self.buf {
+            let c = usize::from(e.ch);
+            if seen & (1 << c) != 0 {
+                if let Some(p) = prev[c]
+                    && e.sample - p >= 2
+                {
+                    widths.push(e.sample - p);
+                }
+                prev[c] = Some(e.sample);
+            }
+            seen |= 1 << c;
+        }
+        widths.sort_unstable();
+        widths.iter().find_map(|&w| {
+            let tol = (w / 10).max(1);
+            let lo = widths.partition_point(|&x| x < w.saturating_sub(tol));
+            let hi = widths.partition_point(|&x| x <= w + tol);
+            let cluster = &widths[lo..hi];
+            (cluster.len() >= need)
+                .then(|| cluster.iter().sum::<u64>() as f64 / cluster.len() as f64)
+        })
+    }
+}
+
 pub struct Uart {
     lines: Vec<Line>,
     state: Lines,
     cfg: Cfg,
     rate: f64,
-    auto: Option<Vec<Edge>>,
+    auto: Option<Auto>,
 }
 
 impl Uart {
@@ -218,7 +278,7 @@ impl Uart {
             o => return Err(spec.usage(format!("stop={o}: use 1, 1.5 or 2"))),
         };
         let (bit, auto) = match spec.get("baud").unwrap_or("auto") {
-            "auto" => (0.0, Some(Vec::new())),
+            "auto" => (0.0, Some(Auto::default())),
             b => {
                 let baud = parse_si(b).ok_or_else(|| spec.usage(format!("invalid baud={b}")))?;
                 if rate < 4.0 * baud {
@@ -265,64 +325,94 @@ impl Uart {
         self.lines.iter().any(|l| l.ch == ch)
     }
 
-    /// Estimate the baud rate from the buffered edges, then decode them.
-    fn settle(&mut self, out: &mut Vec<Event>) {
-        let Some(buf) = self.auto.take() else { return };
-        let mut last: [Option<u64>; 16] = [None; 16];
-        let mut seen = [0u32; 16];
-        let mut min = u64::MAX;
-        for e in buf.iter().filter(|e| self.is_line(e.ch)) {
-            let c = e.ch as usize;
-            seen[c] += 1;
-            // The first edge per channel is its initial level, not a transition.
-            if seen[c] >= 3
-                && let Some(p) = last[c]
-                && e.sample - p >= 2
-            {
-                min = min.min(e.sample - p);
+    fn auto_limits(&self) -> (u64, u64) {
+        (
+            (AUTO_GAP * self.rate) as u64,
+            (AUTO_SPAN * self.rate) as u64,
+        )
+    }
+
+    /// Estimate the baud rate from the buffered edges, then decode them. Unless `force`,
+    /// wait for more edges when no clear cluster of pulse widths exists yet.
+    fn settle(&mut self, force: bool, out: &mut Vec<Event>) -> bool {
+        let Some(a) = &mut self.auto else { return true };
+        let width = a
+            .estimate(3)
+            .or_else(|| if force { a.estimate(1) } else { None });
+        let Some(width) = width else {
+            if force {
+                self.auto = None;
+                out.push(Event::new(
+                    0,
+                    "uart",
+                    "info",
+                    "baud auto-detection failed: not enough edges",
+                ));
+            } else {
+                (a.first, a.last) = (None, None);
             }
-            last[c] = Some(e.sample);
-        }
-        if min == u64::MAX {
-            out.push(Event::new(
-                0,
-                "uart",
-                "info",
-                "baud auto-detection failed: not enough edges",
-            ));
-            return;
-        }
-        let raw = self.rate / min as f64;
-        let baud = STANDARD
-            .iter()
-            .copied()
-            .find(|b| (raw / b - 1.0).abs() < 0.04)
-            .unwrap_or(raw.round());
+            return false;
+        };
+        let buf = std::mem::take(&mut a.buf);
+        self.auto = None;
+        let raw = self.rate / width;
+        let (baud, note) = match STANDARD.iter().find(|b| (raw / *b - 1.0).abs() < 0.04) {
+            Some(&b) => (b, ""),
+            None => (raw.round(), ", non-standard"),
+        };
         self.cfg.bit = self.rate / baud;
-        out.push(Event::new(0, "uart", "info", format!("baud {baud} (auto)")).with("baud", baud));
+        out.push(
+            Event::new(0, "uart", "info", format!("baud {baud} (auto{note})")).with("baud", baud),
+        );
         self.decode(&buf, out);
+        true
     }
 }
 
 impl Decoder for Uart {
     fn feed(&mut self, edges: &[Edge], out: &mut Vec<Event>) {
-        if let Some(buf) = &mut self.auto {
-            buf.extend_from_slice(edges);
-            let n = buf
-                .iter()
-                .filter(|e| self.lines.iter().any(|l| l.ch == e.ch))
-                .count();
-            if n >= AUTO_EDGES {
-                self.settle(out);
+        let mut rest = edges;
+        if self.auto.is_some() {
+            rest = &[];
+            let (gap, span) = self.auto_limits();
+            for (i, e) in edges.iter().enumerate() {
+                if !self.is_line(e.ch) {
+                    continue;
+                }
+                let a = self.auto.as_ref().expect("auto");
+                if a.expired(e.sample, gap, span) && self.settle(false, out) {
+                    rest = &edges[i..];
+                    break;
+                }
+                let a = self.auto.as_mut().expect("auto");
+                a.push(*e);
+                if a.transitions >= AUTO_EDGES && self.settle(true, out) {
+                    rest = &edges[i + 1..];
+                    break;
+                }
             }
+        }
+        self.decode(rest, out);
+    }
+
+    fn advance(&mut self, now: u64, out: &mut Vec<Event>) {
+        let (gap, span) = self.auto_limits();
+        if let Some(a) = &self.auto
+            && !(a.expired(now, gap, span) && self.settle(false, out))
+        {
             return;
         }
-        self.decode(edges, out);
+        let cfg = self.cfg;
+        if cfg.bit > 0.0 {
+            for l in &mut self.lines {
+                l.advance(now as f64, &cfg, out);
+            }
+        }
     }
 
     fn finish(&mut self, end: u64, out: &mut Vec<Event>) {
         if self.auto.is_some() {
-            self.settle(out);
+            self.settle(true, out);
         }
         let cfg = self.cfg;
         if cfg.bit > 0.0 {
@@ -448,6 +538,99 @@ mod tests {
         d.finish(edges.last().unwrap().sample + 100_000, &mut out);
         assert_eq!(out, whole);
         assert_eq!(whole.len(), 5);
+    }
+
+    fn ok_line() -> Vec<Edge> {
+        line(
+            b"OK\r\n".map(u16::from).as_slice(),
+            115200.0,
+            8,
+            None,
+            false,
+        )
+    }
+
+    #[test]
+    fn bytes_emitted_without_waiting_for_next_edge() {
+        let edges = ok_line();
+        let mut d = build(&Spec::parse("uart:rx=0,baud=115200").unwrap(), RATE).unwrap();
+        let mut out = Vec::new();
+        d.feed(&edges, &mut out);
+        d.advance(edges.last().unwrap().sample + 200, &mut out);
+        assert_eq!(
+            out.iter().filter(|e| e.kind == "byte").count(),
+            4,
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn auto_baud_settles_after_idle_gap() {
+        let edges = ok_line();
+        let mut d = build(&Spec::parse("uart:rx=0").unwrap(), RATE).unwrap();
+        let mut out = Vec::new();
+        d.feed(&edges, &mut out);
+        d.advance(
+            edges.last().unwrap().sample + (0.03 * RATE) as u64,
+            &mut out,
+        );
+        assert_eq!(out[0].fields["baud"], 115200.0, "{out:?}");
+        assert_eq!(out.iter().filter(|e| e.kind == "byte").count(), 4);
+    }
+
+    #[test]
+    fn auto_baud_ignores_single_glitch() {
+        let mut edges = line(&[0x55; 40], 115200.0, 8, None, false);
+        edges.splice(
+            1..1,
+            [
+                Edge {
+                    sample: 500,
+                    ch: 0,
+                    level: false,
+                },
+                Edge {
+                    sample: 502,
+                    ch: 0,
+                    level: true,
+                },
+            ],
+        );
+        let ev = decode("uart:rx=0", &edges);
+        assert_eq!(ev[0].fields["baud"], 115200.0, "{:?}", ev[0]);
+        assert_eq!(ev.iter().filter(|e| e.kind == "byte").count(), 40);
+    }
+
+    #[test]
+    fn auto_baud_is_batch_invariant_and_flags_nonstandard() {
+        let mut bytes = vec![0xF0u16; 140];
+        bytes.extend(b"Hello".map(u16::from));
+        let edges = line(&bytes, 115200.0, 8, None, false);
+        let whole = decode("uart:rx=0", &edges);
+        let mut d = build(&Spec::parse("uart:rx=0").unwrap(), RATE).unwrap();
+        let mut out = Vec::new();
+        for e in &edges {
+            d.feed(std::slice::from_ref(e), &mut out);
+        }
+        d.finish(edges.last().unwrap().sample + 100_000, &mut out);
+        assert_eq!(out, whole);
+        assert!(whole[0].text.contains("non-standard"), "{:?}", whole[0]);
+    }
+
+    #[test]
+    fn auto_buffer_ignores_other_channels() {
+        let mut d = build(&Spec::parse("uart:rx=0").unwrap(), RATE).unwrap();
+        let mut out = Vec::new();
+        let other: Vec<Edge> = (0..300)
+            .map(|i| Edge {
+                sample: i * 10,
+                ch: 1,
+                level: i % 2 == 0,
+            })
+            .collect();
+        d.feed(&other, &mut out);
+        d.finish(4000, &mut out);
+        assert!(out.iter().all(|e| e.kind == "info"), "{out:?}");
     }
 
     #[test]
