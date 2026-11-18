@@ -1,5 +1,6 @@
 //! Waveform generators used by tests. Not a stable API.
 
+use crate::decode::usb::{crc5_11, crc16};
 use crate::stream::Edge;
 
 #[derive(Default)]
@@ -138,4 +139,109 @@ pub fn spi_word(
         t += 2 * h;
     }
     t
+}
+
+/// (D+, D-) for symbol 'J', 'K' or '0' (SE0).
+pub fn usb_levels(sym: char, ls: bool) -> (bool, bool) {
+    match (sym, ls) {
+        ('0', _) => (false, false),
+        ('J', false) | ('K', true) => (true, false),
+        _ => (false, true),
+    }
+}
+
+/// SYNC + bytes (PID first), LSB first, bit-stuffed, NRZI from idle J, then EOP (SE0 SE0 J).
+pub fn usb_symbols(bytes: &[u8]) -> Vec<char> {
+    let mut bits = vec![false, false, false, false, false, false, false, true];
+    for b in bytes {
+        for i in 0..8 {
+            bits.push(b >> i & 1 == 1);
+        }
+    }
+    let mut stuffed = Vec::new();
+    let mut ones = 0;
+    for b in bits {
+        stuffed.push(b);
+        if b {
+            ones += 1;
+            if ones == 6 {
+                stuffed.push(false);
+                ones = 0;
+            }
+        } else {
+            ones = 0;
+        }
+    }
+    let mut cur = 'J';
+    let mut syms = Vec::new();
+    for b in stuffed {
+        if !b {
+            cur = if cur == 'J' { 'K' } else { 'J' };
+        }
+        syms.push(cur);
+    }
+    syms.extend(['0', '0', 'J']);
+    syms
+}
+
+pub fn usb_idle(w: &mut Wave, dp: u8, dm: u8, t: u64, ls: bool) {
+    let (p, m) = usb_levels('J', ls);
+    w.set(t, dp, p);
+    w.set(t, dm, m);
+}
+
+/// Drive one packet from `t`; D- transitions lag D+ by `skew` samples. Returns end time.
+#[allow(clippy::too_many_arguments)]
+pub fn usb_packet(
+    w: &mut Wave,
+    dp: u8,
+    dm: u8,
+    t: f64,
+    bit: f64,
+    ls: bool,
+    skew: u64,
+    bytes: &[u8],
+) -> f64 {
+    let syms = usb_symbols(bytes);
+    for (i, &s) in syms.iter().enumerate() {
+        let at = (t + i as f64 * bit).round() as u64;
+        let (p, m) = usb_levels(s, ls);
+        w.set(at, dp, p);
+        w.set(at + skew, dm, m);
+    }
+    t + syms.len() as f64 * bit
+}
+
+pub fn usb_se0(w: &mut Wave, dp: u8, dm: u8, t: u64, dur: u64, ls: bool) {
+    w.set(t, dp, false);
+    w.set(t, dm, false);
+    usb_idle(w, dp, dm, t + dur, ls);
+}
+
+fn usb_pid(pid: u8) -> u8 {
+    pid | (!pid & 0x0f) << 4
+}
+
+fn usb_token11(pid: u8, v: u16) -> Vec<u8> {
+    let f = v | u16::from(crc5_11(v)) << 11;
+    vec![usb_pid(pid), f as u8, (f >> 8) as u8]
+}
+
+pub fn usb_token(pid: u8, addr: u8, ep: u8) -> Vec<u8> {
+    usb_token11(pid, u16::from(addr) | u16::from(ep) << 7)
+}
+
+pub fn usb_sof(frame: u16) -> Vec<u8> {
+    usb_token11(0x5, frame & 0x7ff)
+}
+
+pub fn usb_data(pid: u8, payload: &[u8]) -> Vec<u8> {
+    let mut v = vec![usb_pid(pid)];
+    v.extend_from_slice(payload);
+    v.extend(crc16(payload).to_le_bytes());
+    v
+}
+
+pub fn usb_handshake(pid: u8) -> Vec<u8> {
+    vec![usb_pid(pid)]
 }
