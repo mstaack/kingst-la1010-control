@@ -10,15 +10,33 @@ Platforms: macOS and Linux.
 
 ## Install
 
-```sh
-cargo install --path .
-```
-
-Linux, non-root access:
+**macOS (Apple Silicon or Intel) and Linux x86_64 — prebuilt binary, no Rust needed:**
 
 ```sh
-sudo cp contrib/99-la1010.rules /etc/udev/rules.d/ && sudo udevadm control --reload
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/mstaack/kingst-la1010-control/releases/latest/download/la1010-installer.sh | sh
 ```
+
+This installs `la1010` into `~/.cargo/bin` and adds it to your `PATH` (open a new terminal afterwards).
+Binaries and checksums are also on the [releases page](https://github.com/mstaack/kingst-la1010-control/releases).
+
+**With Cargo** (needs [Rust](https://rustup.rs); on Linux also `libssl-dev`) — from [crates.io](https://crates.io/crates/la1010):
+
+```sh
+cargo install la1010
+```
+
+As a library: `cargo add la1010` ([docs](https://docs.rs/la1010)).
+
+The vendor firmware is not included. After installing, run `la1010 firmware fetch` once (see below).
+
+**Linux permissions** — let your user access the device without root:
+
+```sh
+echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="77a1", ATTR{idProduct}=="01a2", MODE="0660", TAG+="uaccess"' | sudo tee /etc/udev/rules.d/99-la1010.rules
+sudo udevadm control --reload && sudo udevadm trigger   # then replug the analyzer
+```
+
+The same rule is in `contrib/99-la1010.rules`. macOS needs nothing.
 
 The firmware download uses the system TLS library (OpenSSL on Linux, Security.framework on macOS),
 because the vendor server only offers legacy TLS 1.2 cipher suites.
