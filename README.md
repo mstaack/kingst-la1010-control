@@ -264,8 +264,8 @@ Design notes: `docs/superpowers/specs/2026-11-18-la1010-cli-design.md`.
 
 ## Background
 
-My day job is web development, and electronics is a hobby. Guided AI coding has raised the quality
-of what I can build, so I write more and more of my tools in Rust; this is one of them.
+Guided AI coding keeps raising the quality of the code I can produce, so I build more and more
+of my tools in Rust. This is one of them.
 
 ## License
 
