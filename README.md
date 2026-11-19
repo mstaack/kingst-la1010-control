@@ -262,6 +262,11 @@ cargo test --test net -- --ignored                   # downloads ~29 MB from qdk
 
 Design notes: `docs/superpowers/specs/2026-11-18-la1010-cli-design.md`.
 
+## Background
+
+My day job is web development, and electronics is a hobby. Guided AI coding has raised the quality
+of what I can build, so I write more and more of my tools in Rust; this is one of them.
+
 ## License
 
 MIT, see `LICENSE`. The Kingst vendor firmware is not included and not covered (see
